@@ -2,7 +2,7 @@
 name = "ddos_protection_service"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["enyeoluwarotimisimon@gmail.com"]
 description = "A comprehensive DDoS protection and traffic management system for web applications"
 license = "MIT"
 
