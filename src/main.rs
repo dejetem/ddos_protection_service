@@ -1,59 +1,57 @@
-mod config;
+mod cloudflare;
+mod error;
+mod service;
 mod utils;
-mod core;
 
-use config::Settings;
-use core::{RateLimiter, IpBlacklist, TrafficAnalyzer};
-use utils::{init_logging, DdosError, DdosResult};
+use std::sync::Arc;
+use tokio::time::{interval, Duration};
+use dotenv::dotenv;
+use std::env;
 
+use crate::cloudflare::rules::CloudflareRulesManager;
+use crate::service::{DdosProtectionService, DdosProtectionConfig};
+
+/// Main entry point for the DDoS protection service
 #[tokio::main]
-async fn main() -> DdosResult<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load environment variables from .env file
+    dotenv().ok();
+    
     // Initialize logging
-    init_logging();
-    tracing::info!("Starting DDoS protection service...");
-
-    // Load configuration
-    let settings = Settings::load().map_err(DdosError::Config)?;
-    tracing::info!("Configuration loaded successfully");
-
-    // Log startup information
-    tracing::info!(
-        host = %settings.server.host,
-        port = %settings.server.port,
-        "Server configuration loaded"
-    );
-
-    // Initialize Redis connection
-    tracing::info!("Initializing Redis connection...");
-    let redis_url = &settings.redis.url;
+    env_logger::init();
     
-    // Initialize rate limiter
-    tracing::info!("Initializing rate limiter...");
-    let rate_limiter = RateLimiter::new(redis_url, settings.rate_limit.clone())?;
-    tracing::info!("Rate limiter initialized successfully");
+    // Get Cloudflare API credentials from environment variables
+    let api_token = env::var("CLOUDFLARE_API_TOKEN")
+        .expect("CLOUDFLARE_API_TOKEN must be set");
+    let zone_id = env::var("CLOUDFLARE_ZONE_ID")
+        .expect("CLOUDFLARE_ZONE_ID must be set");
     
-    // Initialize IP blacklist
-    tracing::info!("Initializing IP blacklist...");
-    let ip_blacklist = IpBlacklist::new(redis_url, 3600)?; // 1 hour expiration
-    tracing::info!("IP blacklist initialized successfully");
+    // Create Cloudflare client and rules manager
+    let client = Arc::new(cloudflare::client::CloudflareClient::new(&api_token, &zone_id));
+    let rules_manager = Arc::new(CloudflareRulesManager::new(client));
     
-    // Initialize traffic analyzer
-    tracing::info!("Initializing traffic analyzer...");
-    let traffic_analyzer = TrafficAnalyzer::new(
-        redis_url,
-        1000, // 1000 requests threshold
-        60,   // 60 seconds time window
-    )?;
-    tracing::info!("Traffic analyzer initialized successfully");
-
-    // TODO: Initialize Cloudflare client
-    // TODO: Start HTTP server
-
-    tracing::info!("DDoS protection service initialized successfully");
+    // Initialize the rules manager
+    rules_manager.initialize().await?;
     
-    // Keep the application running
+    // Create DDoS protection service with default configuration
+    let config = DdosProtectionConfig::default();
+    let protection_service = Arc::new(DdosProtectionService::new(rules_manager, config));
+    
+    // Start the cleanup task to periodically remove expired states
+    let cleanup_service = protection_service.clone();
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(300)); // Run every 5 minutes
+        loop {
+            interval.tick().await;
+            cleanup_service.cleanup_expired_states().await;
+        }
+    });
+    
+    // TODO: Start the HTTP server to handle incoming requests
+    // This will be implemented in the next phase
+    
+    // Keep the main thread running
     tokio::signal::ctrl_c().await?;
-    tracing::info!("Shutting down DDoS protection service...");
     
     Ok(())
 }
